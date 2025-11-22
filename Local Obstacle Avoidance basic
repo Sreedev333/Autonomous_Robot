@@ -1,0 +1,132 @@
+// --- 1. GLOBAL CONSTANTS & THRESHOLDS ---
+
+// Sensor Fusion Parameters based on US Max Range of 250 cm
+const float US_MAX_RANGE_CM = 250.0; // Max distance for US score calculation
+const float US_CRITICAL_DIST_CM = 25.0; // Distance where US score saturates at 10.0
+const float LIDAR_CAUTION_DIST_CM = 100.0; // Distance (1m) where LiDAR penalty triggers
+const float LIDAR_PENALTY = 3.0; // Fixed weight for confirmed LiDAR obstacle
+
+// Decision Thresholds derived from requirements
+// 50 cm obstacle (250/50 = 5.0) + 3.0 LiDAR = 8.0 Total Score
+const float FORWARD_SAFETY_THRESHOLD = 8.0; // If Score_Front >= 8.0, FORWARD is denied (MUST TURN).
+// Reverse is triggered only if the best path is extremely close (e.g., < 31 cm)
+const float REVERSE_STUCK_THRESHOLD = 10.0; // If Score_Winning >= 10.0, override to REVERSE.
+const float EMERGENCY_STOP_CM = 10.0; // Immediate stop for crash prevention
+
+// --- 2. US DANGER SCORE CALCULATION ---
+/**
+ * @brief Calculates the US Danger Score based on distance and 250cm scale.
+ * @param us_distance_cm The raw distance reading from a single US sensor.
+ * @return float The US Danger Score (0.0 to 10.0).
+ */
+float calculateUsDangerScore(float us_distance_cm) {
+  // If the object is beyond the range of concern, the score is 0.0.
+  if (us_distance_cm > US_MAX_RANGE_CM) {
+    return 0.0;
+  }
+  // If the object is in the critical zone, the score saturates at 10.0.
+  if (us_distance_cm <= US_CRITICAL_DIST_CM) {
+    return 10.0;
+  }
+  // Inverse scaling: Score = 250.0 / Distance (cm)
+  return US_MAX_RANGE_CM / us_distance_cm;
+}
+
+// --- 3. SENSOR FUSION AND PATHFINDING CORE LOGIC ---
+/**
+ * @brief Main function implementing the full decision flowchart.
+ *
+ * @param us_front Raw front US distance (cm).
+ * @param us_left Raw left US distance (cm).
+ * @param us_right Raw right US distance (cm).
+ * @param lidar_front True if LiDAR confirms object < 100cm in the front sector.
+ * @param lidar_left True if LiDAR confirms object < 100cm in the left sector.
+ * @param lidar_right True if LiDAR confirms object < 100cm in the right sector.
+ * @return String The chosen action: FORWARD, TURN_LEFT, TURN_RIGHT, REVERSE, or EMERGENCY_STOP.
+ */
+String fusionAndPathfinding(
+  float us_front, float us_left, float us_right,
+  bool lidar_front, bool lidar_left, bool lidar_right) {
+
+  // --- STEP 1: CALCULATE FUSION SCORES ---
+  // The Total Obstacle Score = US Danger + Lidar Penalty
+  float score_front = calculateUsDangerScore(us_front) + (lidar_front ? LIDAR_PENALTY : 0.0);
+  float score_left = calculateUsDangerScore(us_left) + (lidar_left ? LIDAR_PENALTY : 0.0);
+  float score_right = calculateUsDangerScore(us_right) + (lidar_right ? LIDAR_PENALTY : 0.0);
+
+  float scoreWinning;
+  String pathDirection;
+
+  // --- STEP 2: EMERGENCY STOP CHECK (DIAMOND 1) ---
+  if (us_front < EMERGENCY_STOP_CM) {
+    // IMMEDIATE, CRITICAL CRASH AVOIDANCE
+    return "EMERGENCY_STOP";
+  }
+
+  // --- STEP 3: FIND SAFEST PATH (DIAMOND 2 & 4) ---
+
+  // Check 1: Is Front the Safest Path?
+  if (score_front <= score_left && score_front <= score_right) {
+    // YES: Front is the best direction. Proceed to check its safety.
+
+    // --- STEP 4: FORWARD SAFETY CHECK (DIAMOND 3) ---
+    // Rule: We must turn at 50 cm. Total score at 50 cm is 8.0.
+    // If the score is less than 8.0, it's safe to proceed.
+    if (score_front < FORWARD_SAFETY_THRESHOLD) {
+      // YES: Front is the safest AND it is clear enough to proceed.
+      pathDirection = "FORWARD";
+      scoreWinning = score_front;
+    } else {
+      // NO: Front is the safest path, but it is too blocked (>= 50 cm object).
+      // We are forced to turn. Proceed to the Tie-Breaker (Right Default logic).
+
+      // Tie-Breaker: Choose the best turning direction (Left or Right)
+      if (score_left < score_right) {
+        // Left is clearly the best turn option.
+        pathDirection = "TURN_LEFT";
+        scoreWinning = score_left;
+      } else {
+        // Right is equal or better (default to Right).
+        pathDirection = "TURN_RIGHT";
+        scoreWinning = score_right;
+      }
+    }
+
+  } else if (score_left < score_front && score_left < score_right) {
+    // NO (Front NOT safest): Check 2: Is Left the Safest Path?
+    // YES: Left is clearly the best direction overall.
+    pathDirection = "TURN_LEFT";
+    scoreWinning = score_left;
+
+  } else {
+    // NO (Front/Left NOT safest): The Right path is the safest (or tied with Front).
+    // The final default choice.
+    pathDirection = "TURN_RIGHT";
+    scoreWinning = score_right;
+  }
+
+  // --- STEP 5: FINAL SAFETY GATE (DIAMOND 5) ---
+  // Checks if the chosen 'winning' path (even a turn) is too blocked (Stuck).
+  // We use 10.0 to ensure 50cm obstacle (score 8.0) results in a TURN, not a REVERSE.
+  if (scoreWinning >= REVERSE_STUCK_THRESHOLD) {
+    // NO: The best path is still too dangerous (e.g., < 31 cm to the object).
+    // Override the turn/forward command and execute REVERSE.
+    return "REVERSE";
+  }
+
+  // --- STEP 6: EXECUTE WINNER ---
+  return pathDirection;
+}
+
+// -----------------------------------------------------------------------------
+// ARDUINO SETUP AND LOOP (for compilation and presentation)
+// -----------------------------------------------------------------------------
+
+void setup() {
+  Serial.begin(115200);
+  // Only the main function and logic is needed for this presentation file.
+  // No loops or demo scenarios in this file, just the pure logic explanation.
+  Serial.println("--- PATHFINDING LOGIC EXPLANATION ---");
+  Serial.println("Constants and functions are defined above.");
+  Serial.println("The core logic is implemented in the fusionAndPathfinding function.");
+}
